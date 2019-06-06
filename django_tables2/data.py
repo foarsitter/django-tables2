@@ -151,8 +151,12 @@ class TableQuerysetData(TableData):
         """Cached data length"""
         if not hasattr(self, "_length") or self._length is None:
             if hasattr(self.table, "paginator"):
-                # for paginated tables, use QuerySet.count() as we are interested in total number of records.
-                self._length = self.data.count()
+                if self.table.paginator.object_list:
+                    # use the cached property when there are objects
+                    self._length = self.table.paginator.count
+                else:
+                    # for paginated tables, use QuerySet.count() as we are interested in total number of records.
+                    self._length = self.data.count()
             else:
                 # for non-paginated tables, use the length of the QuerySet
                 self._length = len(self.data)
