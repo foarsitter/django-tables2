@@ -1,9 +1,6 @@
-# coding: utf-8
-from __future__ import absolute_import, unicode_literals
-
 from django.utils.safestring import mark_safe
 
-from django_tables2.utils import Accessor, AttributeDict
+from django_tables2.utils import Accessor, AttributeDict, computed_values
 
 from .base import Column, library
 
@@ -51,7 +48,7 @@ class CheckBoxColumn(Column):
         self.checked = checked
         kwargs = {"orderable": False, "attrs": attrs}
         kwargs.update(extra)
-        super(CheckBoxColumn, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     @property
     def header(self):
@@ -68,8 +65,10 @@ class CheckBoxColumn(Column):
 
         general = self.attrs.get("input")
         specific = self.attrs.get("td__input")
-        attrs = AttributeDict(default, **(specific or general or {}))
-        return mark_safe("<input %s/>" % attrs.as_html())
+
+        attrs = dict(default, **(specific or general or {}))
+        attrs = computed_values(attrs, kwargs={"record": record, "value": value})
+        return mark_safe("<input %s/>" % AttributeDict(attrs).as_html())
 
     def is_checked(self, value, record):
         """

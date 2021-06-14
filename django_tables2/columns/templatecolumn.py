@@ -1,9 +1,5 @@
-# coding: utf-8
-from __future__ import absolute_import, unicode_literals
-
 from django.template import Context, Template
 from django.template.loader import get_template
-from django.utils import six
 from django.utils.html import strip_tags
 
 from .base import Column, library
@@ -45,7 +41,7 @@ class TemplateColumn(Column):
     empty_values = ()
 
     def __init__(self, template_code=None, template_name=None, extra_context=None, **extra):
-        super(TemplateColumn, self).__init__(**extra)
+        super().__init__(**extra)
         self.template_code = template_code
         self.template_name = template_name
         self.extra_context = extra_context or {}
@@ -57,32 +53,25 @@ class TemplateColumn(Column):
         # If the table is being rendered using `render_table`, it hackily
         # attaches the context to the table as a gift to `TemplateColumn`.
         context = getattr(table, "context", Context())
-        context.update(self.extra_context)
-        context.update(
-            {
-                "default": bound_column.default,
-                "column": bound_column,
-                "record": record,
-                "value": value,
-                "row_counter": kwargs["bound_row"].row_counter,
-            }
-        )
-
-        try:
+        additional_context = {
+            "default": bound_column.default,
+            "column": bound_column,
+            "record": record,
+            "value": value,
+            "row_counter": kwargs["bound_row"].row_counter,
+        }
+        additional_context.update(self.extra_context)
+        with context.update(additional_context):
             if self.template_code:
                 return Template(self.template_code).render(context)
             else:
                 return get_template(self.template_name).render(context.flatten())
-        finally:
-            context.pop()
 
     def value(self, **kwargs):
         """
         The value returned from a call to `value()` on a `TemplateColumn` is
         the rendered template with `django.utils.html.strip_tags` applied.
+        Leading and trailing whitespace is stripped.
         """
-        html = super(TemplateColumn, self).value(**kwargs)
-        if isinstance(html, six.string_types):
-            return strip_tags(html)
-        else:
-            return html
+        html = super().value(**kwargs)
+        return strip_tags(html).strip() if isinstance(html, str) else html

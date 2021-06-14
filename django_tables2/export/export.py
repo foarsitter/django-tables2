@@ -1,5 +1,3 @@
-from __future__ import unicode_literals
-
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse
 
@@ -11,16 +9,19 @@ except ImportError:  # pragma: no cover
     )
 
 
-class TableExport(object):
+class TableExport:
     """
     Export data from a table to the file type specified.
 
     Arguments:
-        export_format (str): one of `csv, json, latex, ods, tsv, xls, xlsx, yml`
+        export_format (str): one of `csv, json, latex, ods, tsv, xls, xlsx, yaml`
 
         table (`~.Table`): instance of the table to export the data from
 
         exclude_columns (iterable): list of column names to exclude from the export
+
+        dataset_kwargs (dictionary): passed as `**kwargs` to `tablib.Dataset` constructor
+
     """
 
     CSV = "csv"
@@ -30,7 +31,7 @@ class TableExport(object):
     TSV = "tsv"
     XLS = "xls"
     XLSX = "xlsx"
-    YAML = "yml"
+    YAML = "yaml"
 
     FORMATS = {
         CSV: "text/csv; charset=utf-8",
@@ -40,21 +41,34 @@ class TableExport(object):
         TSV: "text/tsv; charset=utf-8",
         XLS: "application/vnd.ms-excel",
         XLSX: "application/vnd.ms-excel",
-        YAML: "text/yml; charset=utf-8",
+        YAML: "text/yaml; charset=utf-8",
     }
 
-    def __init__(self, export_format, table, exclude_columns=None):
+    def __init__(self, export_format, table, exclude_columns=None, dataset_kwargs=None):
         if not self.is_valid_format(export_format):
             raise TypeError('Export format "{}" is not supported.'.format(export_format))
 
         self.format = export_format
+        self.dataset = self.table_to_dataset(table, exclude_columns, dataset_kwargs)
 
-        self.dataset = Dataset()
+    def table_to_dataset(self, table, exclude_columns, dataset_kwargs=None):
+        """Transform a table to a tablib dataset."""
+
+        def default_dataset_title():
+            try:
+                return table.Meta.model._meta.verbose_name_plural.title()
+            except AttributeError:
+                return "Export Data"
+
+        kwargs = {"title": default_dataset_title()}
+        kwargs.update(dataset_kwargs or {})
+        dataset = Dataset(**kwargs)
         for i, row in enumerate(table.as_values(exclude_columns=exclude_columns)):
             if i == 0:
-                self.dataset.headers = row
+                dataset.headers = row
             else:
-                self.dataset.append(row)
+                dataset.append(row)
+        return dataset
 
     @classmethod
     def is_valid_format(self, export_format):

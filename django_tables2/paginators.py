@@ -1,7 +1,5 @@
-from __future__ import unicode_literals
-
 from django.core.paginator import EmptyPage, Page, PageNotAnInteger, Paginator
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 
 
 class LazyPaginator(Paginator):
@@ -58,10 +56,11 @@ class LazyPaginator(Paginator):
 
     def __init__(self, object_list, per_page, look_ahead=None, **kwargs):
         self._num_pages = None
+        self._final_num_pages = None
         if look_ahead is not None:
             self.look_ahead = look_ahead
 
-        super(LazyPaginator, self).__init__(object_list, per_page, **kwargs)
+        super().__init__(object_list, per_page, **kwargs)
 
     def validate_number(self, number):
         """Validate the given 1-based page number."""
@@ -76,7 +75,9 @@ class LazyPaginator(Paginator):
         return number
 
     def page(self, number):
-        number = self.validate_number(number)
+        # Number might be None, because the total number of pages is not known in this paginator.
+        # If an unknown page is requested, serve the first page.
+        number = self.validate_number(number or 1)
         bottom = (number - 1) * self.per_page
         top = bottom + self.per_page
         # Retrieve more objects to check if there is a next page.
@@ -93,7 +94,12 @@ class LazyPaginator(Paginator):
         else:
             # This is the last page.
             self._num_pages = number
+            # For rendering purposes in `table_page_range`, we have to remember the final count
+            self._final_num_pages = number
         return Page(objects, number, self)
+
+    def is_last_page(self, number):
+        return number == self._final_num_pages
 
     def _get_count(self):
         raise NotImplementedError

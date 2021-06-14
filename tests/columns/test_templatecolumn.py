@@ -1,6 +1,3 @@
-# coding: utf-8
-from __future__ import unicode_literals
-
 from django.template import Context, Template
 from django.test import SimpleTestCase
 
@@ -106,6 +103,14 @@ class TemplateColumnTest(SimpleTestCase):
     def test_should_strip_tags_for_value(self):
         class Table(tables.Table):
             track = tables.TemplateColumn("<span>{{ value }}</span>")
+
+        table = Table([{"track": "Space Oddity"}])
+
+        self.assertEqual(list(table.as_values()), [["Track"], ["Space Oddity"]])
+
+    def test_should_strip_whitespace_for_value(self):
+        class Table(tables.Table):
+            track = tables.TemplateColumn("  {{ value }}  ")
 
         table = Table([{"track": "Space Oddity"}])
 

@@ -1,25 +1,12 @@
-# coding: utf-8
-from __future__ import absolute_import, unicode_literals
-
+import inspect
+import warnings
 from collections import OrderedDict
 from functools import total_ordering
 from itertools import chain
 
+from django.core.exceptions import FieldDoesNotExist
 from django.db import models
-from django.db.models.fields import FieldDoesNotExist
-from django.template.defaultfilters import stringfilter
-from django.utils import six
-from django.utils.functional import keep_lazy_text
 from django.utils.html import format_html_join
-
-
-@keep_lazy_text
-@stringfilter
-def ucfirst(s):
-    if not isinstance(s, six.string_types):
-        return ""
-    else:
-        return s[0].upper() + s[1:]
 
 
 class Sequence(list):
@@ -81,6 +68,18 @@ class OrderBy(str):
 
     QUERYSET_SEPARATOR = "__"
 
+    def __new__(cls, value):
+        instance = super().__new__(cls, value)
+        if Accessor.LEGACY_SEPARATOR in value:
+            message = (
+                "Use '__' to separate path components, not '.' in accessor '{}'"
+                " (fallback will be removed in django_tables2 version 3)."
+            ).format(value)
+
+            warnings.warn(message, DeprecationWarning, stacklevel=3)
+
+        return instance
+
     @property
     def bare(self):
         """
@@ -131,10 +130,9 @@ class OrderBy(str):
         Returns the current instance usable in Django QuerySet's order_by
         arguments.
         """
-        return self.replace(Accessor.SEPARATOR, OrderBy.QUERYSET_SEPARATOR)
+        return self.replace(Accessor.LEGACY_SEPARATOR, OrderBy.QUERYSET_SEPARATOR)
 
 
-@six.python_2_unicode_compatible
 class OrderByTuple(tuple):
     """
     Stores ordering as (as `.OrderBy` objects).
@@ -160,7 +158,7 @@ class OrderByTuple(tuple):
             if not isinstance(item, OrderBy):
                 item = OrderBy(item)
             transformed.append(item)
-        return super(OrderByTuple, cls).__new__(cls, transformed)
+        return super().__new__(cls, transformed)
 
     def __str__(self):
         return ",".join(self)
@@ -210,12 +208,12 @@ class OrderByTuple(tuple):
         Returns:
             `.OrderBy`: for the ordering at the index.
         """
-        if isinstance(index, six.string_types):
+        if isinstance(index, str):
             for order_by in self:
                 if order_by == index or order_by.bare == index:
                     return order_by
             raise KeyError
-        return super(OrderByTuple, self).__getitem__(index)
+        return super().__getitem__(index)
 
     @property
     def key(self):
@@ -226,7 +224,7 @@ class OrderByTuple(tuple):
             reversing.append(order_by.is_descending)
 
         @total_ordering
-        class Comparator(object):
+        class Comparator:
             def __init__(self, obj):
                 self.obj = obj
 
@@ -239,7 +237,7 @@ class OrderByTuple(tuple):
                 return True
 
             def __lt__(self, other):
-                for accessor, reverse in six.moves.zip(accessors, reversing):
+                for accessor, reverse in zip(accessors, reversing):
                     a = accessor.resolve(self.obj, quiet=True)
                     b = accessor.resolve(other.obj, quiet=True)
                     if a == b:
@@ -291,20 +289,37 @@ class Accessor(str):
     A string describing a path from one object to another via attribute/index
     accesses. For convenience, the class has an alias `.A` to allow for more concise code.
 
-    Relations are separated by a ``.`` character.
+    Relations are separated by a ``__`` character.
+
+    To support list-of-dicts from ``QuerySet.values()``, if the context is a dictionary,
+    and the accessor is a key in the dictionary, it is returned right away.
     """
 
-    SEPARATOR = "."
+    LEGACY_SEPARATOR = "."
+    SEPARATOR = "__"
 
     ALTERS_DATA_ERROR_FMT = "Refusing to call {method}() because `.alters_data = True`"
     LOOKUP_ERROR_FMT = (
         "Failed lookup for key [{key}] in {context}, when resolving the accessor {accessor}"
     )
 
+    def __new__(cls, value):
+        instance = super().__new__(cls, value)
+        if cls.LEGACY_SEPARATOR in value:
+            instance.SEPARATOR = cls.LEGACY_SEPARATOR
+
+            message = (
+                "Use '__' to separate path components, not '.' in accessor '{}'"
+                " (fallback will be removed in django_tables2 version 3)."
+            ).format(value)
+
+            warnings.warn(message, DeprecationWarning, stacklevel=3)
+
+        return instance
+
     def resolve(self, context, safe=True, quiet=False):
         """
-        Return an object described by the accessor by traversing the attributes
-        of *context*.
+        Return an object described by the accessor by traversing the attributes of *context*.
 
         Lookups are attempted in the following order:
 
@@ -317,15 +332,23 @@ class Accessor(str):
 
         Example::
 
-            >>> x = Accessor('__len__')
-            >>> x.resolve('brad')
+            >>> x = Accessor("__len__")
+            >>> x.resolve("brad")
             4
-            >>> x = Accessor('0.upper')
-            >>> x.resolve('brad')
-            'B'
+            >>> x = Accessor("0__upper")
+            >>> x.resolve("brad")
+            "B"
+
+        If the context is a dictionary and the accessor-value is a key in it,
+        the value for that key is immediately returned::
+
+            >>> x = Accessor("user__first_name")
+            >>> x.resolve({"user__first_name": "brad"})
+            "brad"
+
 
         Arguments:
-            context (object): The root/first object to traverse.
+            context : The root/first object to traverse.
             safe (bool): Don't call anything with `alters_data = True`
             quiet (bool): Smother all exceptions and instead return `None`
 
@@ -336,6 +359,10 @@ class Accessor(str):
             TypeError`, `AttributeError`, `KeyError`, `ValueError`
             (unless `quiet` == `True`)
         """
+        # Short-circuit if the context contains a key with the exact name of the accessor,
+        # supporting list-of-dicts data returned from values_list("related_model__field")
+        if isinstance(context, dict) and self in context:
+            return context[self]
 
         try:
             current = context
@@ -368,7 +395,7 @@ class Accessor(str):
                         raise ValueError(self.ALTERS_DATA_ERROR_FMT.format(method=repr(current)))
                     if not getattr(current, "do_not_call_in_templates", False):
                         current = current()
-                # important that we break in None case, or a relationship
+                # Important that we break in None case, or a relationship
                 # spanning across a null-key will raise an exception in the
                 # next iteration, instead of defaulting.
                 if current is None:
@@ -406,17 +433,17 @@ class Accessor(str):
 
     def penultimate(self, context, quiet=True):
         """
-        Split the accessor on the right-most dot '.', return a tuple with:
+        Split the accessor on the right-most separator ('__'), return a tuple with:
          - the resolved left part.
          - the remainder
 
         Example::
 
-            >>> Accessor("a.b.c").penultimate({"a": {"a": 1, "b": {"c": 2, "d": 4}}})
+            >>> Accessor("a__b__c").penultimate({"a": {"a": 1, "b": {"c": 2, "d": 4}}})
             ({"c": 2, "d": 4}, "c")
 
         """
-        path, _, remainder = self.rpartition(".")
+        path, _, remainder = self.rpartition(self.SEPARATOR)
         return A(path).resolve(context, quiet=quiet), remainder
 
 
@@ -437,10 +464,10 @@ class AttributeDict(OrderedDict):
     blacklist = ("th", "td", "_ordering", "thead", "tbody", "tfoot")
 
     def _iteritems(self):
-        for k, v in six.iteritems(self):
+        for key, v in self.items():
             value = v() if callable(v) else v
-            if k not in self.blacklist and value is not None:
-                yield (k, value)
+            if key not in self.blacklist and value is not None:
+                yield (key, value)
 
     def as_html(self):
         """
@@ -507,20 +534,7 @@ def signature(fn):
 
     The self-argument for methods is always removed.
     """
-    import inspect
 
-    # getargspec is Deprecated since version 3.0, so if not PY2, use the new
-    # inspect api.
-
-    if six.PY2:
-        argspec = inspect.getargspec(fn)
-        args = argspec.args
-        if len(args) > 0:
-            args = tuple(args[1:] if args[0] == "self" else args)
-
-        return (args, argspec.keywords)
-
-    # python 3 version:
     signature = inspect.signature(fn)
 
     args = []
@@ -598,7 +612,7 @@ def computed_values(d, kwargs=None):
     """
     kwargs = kwargs or {}
     result = {}
-    for k, v in six.iteritems(d):
+    for k, v in d.items():
         if callable(v):
             v = call_with_appropriate(v, kwargs=kwargs)
         if isinstance(v, dict):

@@ -1,17 +1,17 @@
-# coding: utf-8
-from __future__ import absolute_import, unicode_literals
-
 import json
 
 from django.utils.html import format_html
 
-from django_tables2.utils import AttributeDict, ucfirst
-
+from ..utils import AttributeDict
 from .base import library
 from .linkcolumn import BaseLinkColumn
 
 try:
-    from django.contrib.postgres.fields import HStoreField, JSONField
+    try:
+        from django.contrib.postgres.fields import HStoreField
+        from django.db.models import JSONField  # django==3.1 moved JSONField
+    except ImportError:
+        from django.contrib.postgres.fields import HStoreField, JSONField
 
     POSTGRES_AVAILABLE = True
 except ImportError:
@@ -48,7 +48,7 @@ class JSONColumn(BaseLinkColumn):
             json_dumps_kwargs if json_dumps_kwargs is not None else {"indent": 2}
         )
 
-        super(JSONColumn, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     def render(self, record, value):
         return format_html(
@@ -58,7 +58,7 @@ class JSONColumn(BaseLinkColumn):
         )
 
     @classmethod
-    def from_field(cls, field):
+    def from_field(cls, field, **kwargs):
         if POSTGRES_AVAILABLE:
-            if isinstance(field, JSONField) or isinstance(field, HStoreField):
-                return cls(verbose_name=ucfirst(field.verbose_name))
+            if isinstance(field, (JSONField, HStoreField)):
+                return cls(**kwargs)

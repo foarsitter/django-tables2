@@ -1,6 +1,3 @@
-# coding: utf-8
-from __future__ import unicode_literals
-
 from django.test import SimpleTestCase
 
 import django_tables2 as tables
@@ -91,4 +88,18 @@ class CheckBoxColumnTest(SimpleTestCase):
             "type": "checkbox",
             "value": "2",
             "name": "col",
+        }
+
+    def test_column_callable_attrs(self):
+        class TestTable(tables.Table):
+            col = tables.CheckBoxColumn(
+                attrs={"input": {"data-source": lambda record: record["col"]}}
+            )
+
+        table = TestTable([{"col": "1"}])
+        assert attrs(table.rows[0].get_cell("col")) == {
+            "type": "checkbox",
+            "value": "1",
+            "name": "col",
+            "data-source": "1",
         }

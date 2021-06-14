@@ -1,14 +1,18 @@
-# coding: utf-8
-from __future__ import unicode_literals
-
 import json
+import os
+from datetime import date, datetime, time
+from tempfile import NamedTemporaryFile
 from unittest import skipIf
 
+import pytz
+import yaml
 from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import render
 from django.test import TestCase
+from openpyxl import load_workbook
 
 import django_tables2 as tables
+from django_tables2 import A
 from django_tables2.config import RequestConfig
 
 from .app.models import Occupation, Person, Region
@@ -42,8 +46,8 @@ class Table(tables.Table):
 
 
 class AccessorTable(tables.Table):
-    given_name = tables.Column(accessor=tables.A("first_name"), verbose_name="Given name")
-    surname = tables.Column(accessor=tables.A("last_name"))
+    given_name = tables.Column(accessor=A("first_name"), verbose_name="Given name")
+    surname = tables.Column(accessor=A("last_name"))
 
 
 class View(ExportMixin, tables.SingleTableView):
@@ -98,9 +102,7 @@ class TableExportTest(TestCase):
             Person.objects.create(first_name=first_name, last_name=last_name, occupation=programmer)
 
         class AccessorRelationTable(AccessorTable):
-            occupation = tables.Column(
-                accessor=tables.A("occupation.name"), verbose_name="Occupation"
-            )
+            occupation = tables.Column(accessor=A("occupation__name"), verbose_name="Occupation")
 
         table = AccessorRelationTable(Person.objects.all())
 
@@ -109,6 +111,26 @@ class TableExportTest(TestCase):
             row + "," + programmer.name for row in EXPECTED_CSV_DATA
         )
         self.assertEqual(exporter.export(), CSV_SEP.join(expected) + CSV_SEP)
+
+    def test_export_dataset_kwargs(self):
+        table = Table(
+            [
+                {"first_name": "Yildiz", "last_name": "van der Kuil"},
+                {"first_name": "Jan", "last_name": None},
+            ]
+        )
+        title = "My Custom Title"
+        exporter = TableExport("xlsx", table, dataset_kwargs={"title": title})
+        self.assertEqual(exporter.dataset.title, title)
+
+    def test_export_default_dataset_title(self):
+        class PersonTable(Table):
+            class Meta:
+                model = Person  # provides default title
+
+        table = PersonTable(Person.objects.all())
+        exporter = TableExport("xlsx", table)
+        self.assertEqual(exporter.dataset.title, Person._meta.verbose_name_plural.title())
 
 
 @skipIf(TableExport is None, "Tablib is required to run the export tests")
@@ -138,6 +160,12 @@ class ExportViewTest(TestCase):
         response = View.as_view()(build_request("/?_export=json"))
         self.assertEqual(json.loads(response.getvalue().decode("utf8")), EXPECTED_JSON)
 
+    def test_should_support_yaml_export(self):
+        response = View.as_view()(build_request("/?_export=yaml"))
+        self.assertEqual(
+            yaml.load(response.getvalue().decode("utf8"), Loader=yaml.FullLoader), EXPECTED_JSON
+        )
+
     def test_should_support_custom_trigger_param(self):
         class View(ExportMixin, tables.SingleTableView):
             table_class = Table
@@ -157,9 +185,7 @@ class ExportViewTest(TestCase):
         self.assertEqual(response["Content-Disposition"], 'attachment; filename="people.json"')
 
     def test_function_view(self):
-        """
-        Test the code used in the docs
-        """
+        """Test the code used in the docs."""
 
         def table_view(request):
             table = Table(Person.objects.all())
@@ -182,6 +208,27 @@ class ExportViewTest(TestCase):
         self.assertIn("Yildiz", html)
         self.assertNotIn("Lindy", html)
 
+    def test_should_support_custom_dataset_kwargs(self):
+        title = "The Sheet Name"
+
+        class View(ExportMixin, tables.SingleTableView):
+            table_class = Table
+            model = Person  # required for ListView
+            dataset_kwargs = {"title": title}
+
+        response = View.as_view()(build_request("/?_export=xlsx"))
+        self.assertEqual(response.status_code, 200)
+
+        tmp = NamedTemporaryFile(suffix=".xlsx", delete=False)
+        try:
+            tmp.write(response.content)
+            tmp.seek(0)
+            wb = load_workbook(tmp.name)
+            self.assertIn(title, wb.sheetnames)
+        finally:
+            tmp.close()
+            os.unlink(tmp.name)
+
 
 class OccupationTable(tables.Table):
     name = tables.Column()
@@ -190,9 +237,9 @@ class OccupationTable(tables.Table):
 
 
 class OccupationView(ExportMixin, tables.SingleTableView):
+    model = Occupation
     table_class = OccupationTable
     table_pagination = {"per_page": 1}
-    model = Occupation
     template_name = "django_tables2/bootstrap.html"
 
 
@@ -200,7 +247,7 @@ class OccupationView(ExportMixin, tables.SingleTableView):
 class AdvancedExportViewTest(TestCase):
     @classmethod
     def setUpClass(cls):
-        super(AdvancedExportViewTest, cls).setUpClass()
+        super().setUpClass()
 
         richard = Person.objects.create(first_name="Richard", last_name="Queener")
 
@@ -216,12 +263,74 @@ class AdvancedExportViewTest(TestCase):
         self.assertTrue(data.find("Ecoloog".encode()))
         self.assertTrue(data.find("Timmerman".encode()))
 
+    def test_datetime_xls(self):
+        """Verify datatime objects can be exported to xls."""
+
+        utc = pytz.timezone("UTC")
+
+        class Table(tables.Table):
+            date = tables.DateColumn()
+            time = tables.TimeColumn()
+            datetime = tables.DateTimeColumn()
+
+        class View(ExportMixin, tables.SingleTableView):
+            table_class = Table
+            table_pagination = {"per_page": 1}
+            template_name = "django_tables2/bootstrap.html"
+
+            def get_queryset(self):
+                return [
+                    {
+                        "date": date(2019, 7, 22),
+                        "time": time(11, 11, 11),
+                        "datetime": utc.localize(datetime(2019, 7, 22, 11, 11, 11)),
+                    }
+                ]
+
+        response = View.as_view()(build_request("/?_export=csv"))
+        data = response.getvalue().decode("utf8")
+
+        expected_csv = "\r\n".join(
+            ("Date,Time,Datetime", "2019-07-22,11:11:11,2019-07-22 13:11:11", "")
+        )
+        self.assertEqual(data, expected_csv)
+
+        response = View.as_view()(build_request("/?_export=xls"))
+        self.assertIn("2019-07-22 13:11:11".encode(), response.content)
+
+    def test_export_invisible_columns(self):
+        """Verify columns with visible=False *do* get exported."""
+
+        DATA = [{"name": "Bess W. Fletcher", "website": "teammonka.com"}]
+
+        class Table(tables.Table):
+            name = tables.Column()
+            website = tables.Column(visible=False)
+
+        class View(ExportMixin, tables.SingleTableView):
+            table_class = Table
+            table_pagination = {"per_page": 1}
+            template_name = "django_tables2/bootstrap.html"
+
+            def get_queryset(self):
+                return DATA
+
+        response = View.as_view()(build_request())
+        self.assertNotContains(response, "teammonka.com")
+
+        response = View.as_view()(build_request("/?_export=csv"))
+
+        data = response.getvalue().decode()
+
+        expected_csv = "\r\n".join(("Name,Website", "Bess W. Fletcher,teammonka.com", ""))
+        self.assertEqual(data, expected_csv)
+
     def test_should_work_with_foreign_key_fields(self):
         class OccupationWithForeignKeyFieldsTable(tables.Table):
             name = tables.Column()
             boolean = tables.Column()
             region = tables.Column()
-            mayor = tables.Column(accessor="region.mayor.first_name")
+            mayor = tables.Column(accessor="region__mayor__first_name")
 
         class View(ExportMixin, tables.SingleTableView):
             table_class = OccupationWithForeignKeyFieldsTable
@@ -236,7 +345,8 @@ class AdvancedExportViewTest(TestCase):
             (
                 "Name,Boolean,Region,First name",
                 "Timmerman,True,Vlaanderen,Richard",
-                "Ecoloog,False,Vlaanderen,Richard\r\n",
+                "Ecoloog,False,Vlaanderen,Richard",
+                "",
             )
         )
         self.assertEqual(data, expected_csv)
